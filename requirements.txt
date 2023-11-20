@@ -4,3 +4,4 @@ torch
 pandas
 matplotlib
 gensim
+sentence-transformers
