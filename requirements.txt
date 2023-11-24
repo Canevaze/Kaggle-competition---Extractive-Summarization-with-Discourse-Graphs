@@ -4,5 +4,5 @@ torch
 pandas
 matplotlib
 gensim
-torch_geometric
 sentence-transformers
+torch_geometric
