@@ -10,13 +10,20 @@ embedding_model = 'word2vec-google-news-300'
 # -------------------- Model -------------------- #
 
 # Loading the model
+
 def load_embedding_model():
     """
-    Loads the model
+    Loads the model if it is not in cache yet
     :return: None
     """
     global wv
-    wv = api.load(embedding_model)
+    if embedding_model not in api.info()['models']:
+        wv = api.load(embedding_model)
+        print("Model loaded from cache.")
+    else:
+        wv = api.load(embedding_model)
+        print("Model loaded from internet.")
+
 
 # ------------------- Methods ------------------- #
 
@@ -26,7 +33,19 @@ def get_embedding(word):
     :param word: word to get the embedding of
     :return: embedding of the word
     """
-    return wv[word]
+    if word in wv:
+        return wv[word]
+    else:
+        print(f"Word '{word}' not found in the vocabulary.")
+        return None
+
+def is_in_vocabulary(word):
+    """
+    Returns whether a word is in the vocabulary
+    :param word: word to check
+    :return: True if the word is in the vocabulary, False otherwise
+    """
+    return word in wv
 
 def get_sentence_embedding(sentence):
     """
@@ -35,20 +54,25 @@ def get_sentence_embedding(sentence):
     :return: embedding of the sentence
     """
     words = sentence.split()
+    print(words)
     sentence_embedding = np.zeros(300)
+    m = 0
     for word in words:     
-        word = word.strip('.,?!"\'').lower()        # remove punctuation
-        try:
+        word = word.strip('.,?!"\'').lower()        # remove punctuation and lower case
+        if word =='' :
+            pass
+        else :
             word_embedding = get_embedding(word)
-            sentence_embedding += word_embedding
-        except KeyError:
-            continue
-    return sentence_embedding/len(words)
+            if word_embedding is not None:
+                sentence_embedding += word_embedding
+                m+=1
+        
+    return sentence_embedding/m
 
 # ------------------- Testing ------------------- #
 
 if __name__ == "__main__":
-    load_embedding_model()                          # load the model (1.5 GB)
+    load_embedding_model()                          # load the model (1.5 GB))
     print(get_sentence_embedding("I am a sentence")) 
 
 # ------------------- End of File ------------------- #
