@@ -7,3 +7,4 @@ gensim
 sentence-transformers
 torch_geometric
 jsonargparse
+sentence-transformers

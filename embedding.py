@@ -27,7 +27,7 @@ def load_embedding_model():
 
 # ------------------- Methods ------------------- #
 
-def get_embedding(word):
+def get_embedding(word,pprint):
     """
     Returns the embedding of a word
     :param word: word to get the embedding of
@@ -36,7 +36,8 @@ def get_embedding(word):
     if word in wv:
         return wv[word]
     else:
-        print(f"Word '{word}' not found in the vocabulary.")
+        if pprint:
+            print(f"Word '{word}' not found in the vocabulary.")
         return None
 
 def is_in_vocabulary(word):
@@ -47,14 +48,13 @@ def is_in_vocabulary(word):
     """
     return word in wv
 
-def get_sentence_embedding(sentence):
+def get_sentence_embedding(sentence,pprint):
     """
     Returns the embedding of a sentence
     :param sentence: sentence to get the embedding of
     :return: embedding of the sentence
     """
     words = sentence.split()
-    print(words)
     sentence_embedding = np.zeros(300)
     m = 0
     for word in words:     
@@ -62,17 +62,19 @@ def get_sentence_embedding(sentence):
         if word =='' :
             pass
         else :
-            word_embedding = get_embedding(word)
+            word_embedding = get_embedding(word,pprint)
             if word_embedding is not None:
                 sentence_embedding += word_embedding
                 m+=1
-        
-    return sentence_embedding/m
+    if m == 0:
+        return np.zeros(300)
+    else:
+        return sentence_embedding/m
 
 # ------------------- Testing ------------------- #
 
 if __name__ == "__main__":
     load_embedding_model()                          # load the model (1.5 GB))
-    print(get_sentence_embedding("I am a sentence")) 
+    print(get_sentence_embedding("I am a sentence",True)) 
 
 # ------------------- End of File ------------------- #

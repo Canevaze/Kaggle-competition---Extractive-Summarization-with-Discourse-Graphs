@@ -7,10 +7,11 @@ import numpy as np
 import torch.nn.functional as F
 from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv
+from sentence_transformers import SentenceTransformer
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-import embedding as emb         # embedding.py
+
 
 # --------------------- Paths --------------------- #
 
@@ -19,9 +20,8 @@ path_to_test = Path("test")
 
 # ------------------- Embedding ------------------- #
 
-print("Loading embedding model...")
-emb.load_embedding_model()
-print("Embedding model loaded.")
+model = SentenceTransformer('all-MiniLM-L6-v2')
+model.encode("Test sentence")
 
 # --------------------- Data ---------------------- #
 
@@ -63,7 +63,7 @@ for transcription_id in tqdm.tqdm(training_transcription_ids, desc="Processing t
         X = []
 
         for i in range(len(transcription)):
-            embedding_text = emb.get_sentence_embedding(transcription[i]["text"], False)
+            embedding_text = model.encode(transcription[i]["text"])
             X.append(embedding_text)
 
         X = torch.tensor(X, dtype=torch.float)
@@ -84,38 +84,42 @@ dataset = [Data(x=X, edge_index=edge_index, y=labels) for X, edge_index, labels 
 print("Dataset built:", len(dataset), "Graphs.")
 
 # ------------------- GCN Model ------------------- #
-num_node_features = 300
+num_node_features = 384
 num_classes = 2
-relative_weight = 3
-dim_intermediate = 556
+relative_weight = 3.5
+dim_intermediate = 112
 
 class GCN(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.conv1 = GCNConv(num_node_features, dim_intermediate)
-        intermediate_dim = dim_intermediate // 2  # Half the dimension of dim_intermediate
-        self.intermediate_conv = GCNConv(dim_intermediate, intermediate_dim)
-        self.conv2 = GCNConv(intermediate_dim, num_classes)
+        self.conv2 = GCNConv(dim_intermediate, dim_intermediate)
+        self.conv3 = GCNConv(dim_intermediate, dim_intermediate)
+        self.conv4 = GCNConv(dim_intermediate, dim_intermediate)
+        self.conv5 = GCNConv(dim_intermediate, dim_intermediate)
+        self.conv6 = GCNConv(dim_intermediate, num_classes)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
 
         x = self.conv1(x, edge_index)
         x = F.relu(x)
-        x = F.dropout(x, training=self.training)
-        
-        # Add the intermediate GCNConv layer
-        x = self.intermediate_conv(x, edge_index)
-        x = F.relu(x)
-        x = F.dropout(x, training=self.training)
-        
         x = self.conv2(x, edge_index)
+        x = F.relu(x)
+        x = self.conv3(x, edge_index)
+        x = F.relu(x)
+        x = self.conv4(x, edge_index)
+        x = F.relu(x)
+        x = self.conv5(x, edge_index)
+        x = F.relu(x)
+        x = self.conv6(x, edge_index)
 
-        return F.log_softmax(x, dim=1)
+        return x  # Remove the log_softmax layer
+
     
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = GCN().to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
+optimizer = torch.optim.Adagrad(model.parameters(), lr=0.0001)
 
 # Convert the entire dataset to device
 dataset = [data.to(device) for data in dataset]
