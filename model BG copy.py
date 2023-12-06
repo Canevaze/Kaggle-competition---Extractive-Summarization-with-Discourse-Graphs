@@ -5,6 +5,7 @@ import tqdm
 import torch
 import numpy as np
 import torch.nn.functional as F
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv
 from sentence_transformers import SentenceTransformer
@@ -77,7 +78,7 @@ for transcription_id in tqdm.tqdm(training_transcription_ids, desc="Processing t
 
         # ------- Building dataset ------- #
 
-validation_percentage = 0.2
+validation_percentage = 0.25
 validation_size = int(len(X_list) * validation_percentage)
 
 print("Splitting dataset...")
@@ -123,6 +124,7 @@ class GCN(torch.nn.Module):
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = GCN().to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
+scheduler = ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5, verbose=True)
 dataset_train = [data.to(device) for data in dataset_train]
 
 losses_train = []
@@ -180,7 +182,7 @@ for epoch in range(100):
         fn += [predictions[i] == 0 and target[i] == 1 for i in range(len(predictions))].count(True)
         loss = torch.nn.MSELoss()(out, target)
         total_loss += loss.item()
-    losses_validation.append(total_loss)
+    losses_validation.append(total_loss/validation_percentage)
     print("Validation Loss:", total_loss, "TP:", tp, "/", total_1, "FP:", fp, "/", total_1, "TN:", tn, "/", total_0, "FN:", fn, "/", total_0)
     if (tp+0.5*(fp+fn)) == 0:
         print("F1 score:", 0)
@@ -188,6 +190,7 @@ for epoch in range(100):
         print("F1 score:", tp / (tp + 0.5 * (fp + fn)))
     print('-------------------')
     model.train()
+    scheduler.step(total_loss)
 
 # Plotting the loss function
 plt.plot(range(len(losses_validation)), losses_validation)
