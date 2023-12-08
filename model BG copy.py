@@ -10,6 +10,7 @@ from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv
 from sentence_transformers import SentenceTransformer
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 from pathlib import Path
 import tqdm
 
@@ -46,6 +47,11 @@ except FileNotFoundError:
 
 print("Data loaded.")
 
+        # ---- Loading Label Dict ---- #
+
+label_dict = json.load(open("label_dict.json", "r"))
+size_dict = len(label_dict)
+print("Using label_dict.json of size", size_dict, "to transform x_edge_values...")
 
         # ------- Building tensor ------- #
 
@@ -67,6 +73,22 @@ for transcription_id in tqdm.tqdm(training_transcription_ids, desc="Processing t
         X = embedding_text.tolist()
         X = torch.tensor(X, dtype=torch.float)
         labels = torch.tensor(training_label, dtype=torch.long)
+        edge_values = edges[:, [1]]
+        individual_edge_values = []
+        for x in range(0, len(X)):
+            x_neighbors_indexes = [i for i in range(len(formatted_edges)) if formatted_edges[i][0] == x or formatted_edges[i][1] == x]
+            x_edge_values = edge_values[x_neighbors_indexes]
+            x_edge_values = np.unique(x_edge_values)
+
+            # Transform x_edge_values using label_dict.json
+            x_edge_values = [label_dict[str(value)] for value in x_edge_values]
+            edge_labels_weights = torch.zeros(size_dict, dtype=torch.float)
+            for i in range(size_dict):
+                edge_labels_weights[i] = x_edge_values.count(i)
+            edge_labels_weights = edge_labels_weights / torch.sum(edge_labels_weights)
+            individual_edge_values.append(edge_labels_weights)
+        X = torch.cat((X, torch.stack(individual_edge_values)), 1)
+
 
         # Create a Data object for each transcription
         data = Data(x=X, edge_index=edge_index.t(), y=labels)
@@ -95,43 +117,68 @@ dataset_train = [Data(x=X, edge_index=edge_index, y=labels) for X, edge_index, l
 dataset_val = [Data(x=X, edge_index=edge_index, y=labels) for X, edge_index, labels in zip(X_list_val, edge_index_list_val, labels_list_val)]
 print("Dataset built:", len(dataset_train) + len(dataset_val), "Graphs (", len(dataset_train), "for training and", len(dataset_val), "for validation).")
 
+# # Select nodes with most connections and print the number of maximum connections
+# max_connections = 0
+# for data in tqdm.tqdm(dataset_train):
+#     edges = data.edge_index
+#     for i in range (len(data.x)):
+#         connections = [1 if x == i else 0 for x in edges[0]].count(1) + [1 if x == i else 0 for x in edges[1]].count(1)
+#         if connections > max_connections:
+#             max_connections = connections
+# print("Maximum number of connections:", max_connections)
 
-# Model definition (GCN) #
-input_size = 384
+# Model definition #
+input_size = 384 + size_dict
 intermediate_size = 384
 dropout = 0.2
 final_size = 1
-threshold = 0.25
-class GCN(torch.nn.Module):
-    def __init__(self):
-        super(GCN, self).__init__()
-        self.fc1 = torch.nn.Linear(input_size, final_size)
+threshold = 0.29
+class Model(torch.nn.Module):
+    def __init__(self, input_size=input_size, intermediate_size=intermediate_size, dropout=dropout, final_size=final_size):
+        super(Model, self).__init__()
+        self.fc1_first = torch.nn.Linear(input_size - size_dict, final_size)
+        self.fc2_last = torch.nn.Linear(size_dict, final_size)
+        self.fc3_combined = torch.nn.Linear(final_size * 2, final_size)
         self.dropout = torch.nn.Dropout(dropout)
         self.relu = torch.nn.ReLU()
-        self.sigmoid = torch.nn.Sigmoid()
+        # # Initialize weights so that the model predicts 0.5 for all inputs
+        # self.fc1_first.weight.data.fill_(1)
+        # self.fc1_first.bias.data.fill_(1)
+        # self.fc2_last.weight.data.fill_(1)
+        # self.fc2_last.bias.data.fill_(1)
+        # self.fc3_combined.weight.data.fill_(1)
+        # self.fc3_combined.bias.data.fill_(1)
 
 
     def forward(self, data):
-        x, edge_index = data.x, data.edge_index
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.dropout(x)
-        return x.squeeze(1)
-    
-    
+        x = data.x
+        x_first = x[:, :input_size - size_dict]
+        x_first = self.fc1_first(x_first)
+        x_first = self.dropout(x_first)
+        x_first = self.relu(x_first)
+        x_last = x[:, -size_dict:]
+        x_last = self.fc2_last(x_last)
+        x_last = self.dropout(x_last)
+        x_last = self.relu(x_last)
+        x_combined = torch.cat([x_first, x_last], dim=1)
+        x_combined = self.fc3_combined(x_combined)
+        x_combined = self.dropout(x_combined)
+        x_combined = self.relu(x_combined)
+        return x_combined.squeeze(1)
 # Model training #
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = GCN().to(device)
+model = Model().to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
 scheduler = ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5, verbose=True)
+criterion = torch.nn.MSELoss()
+# criterion = torch.nn.BCEWithLogitsLoss()
 dataset_train = [data.to(device) for data in dataset_train]
 
 losses_train = []
 losses_validation = []
 model.train()
-for epoch in range(100):
-    number_of_predicted_1 = 0
+for epoch in range(300):
     tp = 0
     tn = 0
     fn = 0
@@ -152,17 +199,14 @@ for epoch in range(100):
         tn += [predictions[i] == 0 and target[i] == 0 for i in range(len(predictions))].count(True)
         fp += [predictions[i] == 1 and target[i] == 0 for i in range(len(predictions))].count(True)
         fn += [predictions[i] == 0 and target[i] == 1 for i in range(len(predictions))].count(True)
-
-        loss = torch.nn.MSELoss()(out, target)
+        loss = criterion(out, target)
         total_loss += loss.item()
         loss.backward()
         optimizer.step()
     losses_train.append(total_loss)
-    print('-------------------')
     print("Epoch:", epoch, "Loss:", total_loss, "TP:", tp, "/", total_1, "FP:", fp, "/", total_1, "TN:", tn, "/", total_0, "FN:", fn, "/", total_0) 
     # Calculate f1 score on validation set
     model.eval()
-    number_of_predicted_1 = 0
     tp = 0
     tn = 0
     fn = 0
@@ -180,7 +224,7 @@ for epoch in range(100):
         tn += [predictions[i] == 0 and target[i] == 0 for i in range(len(predictions))].count(True)
         fp += [predictions[i] == 1 and target[i] == 0 for i in range(len(predictions))].count(True)
         fn += [predictions[i] == 0 and target[i] == 1 for i in range(len(predictions))].count(True)
-        loss = torch.nn.MSELoss()(out, target)
+        loss = criterion(out, target)
         total_loss += loss.item()
     losses_validation.append(total_loss/validation_percentage)
     print("Validation Loss:", total_loss, "TP:", tp, "/", total_1, "FP:", fp, "/", total_1, "TN:", tn, "/", total_0, "FN:", fn, "/", total_0)
@@ -196,8 +240,9 @@ for epoch in range(100):
 plt.plot(range(len(losses_validation)), losses_validation)
 plt.plot(range(len(losses_train)), losses_train)
 plt.xlabel('Epoch')
-plt.ylabel('Loss')
+plt.ylabel('Loss') 
 plt.title('Loss Function')
+plt.legend(['Validation', 'Train'])
 plt.show()
 
 
@@ -231,7 +276,7 @@ for b in tqdm.tqdm(B) :
         tn += [predictions[i] == 0 and target[i] == 0 for i in range(len(predictions))].count(True)
         fp += [predictions[i] == 1 and target[i] == 0 for i in range(len(predictions))].count(True)
         fn += [predictions[i] == 0 and target[i] == 1 for i in range(len(predictions))].count(True)
-        loss = torch.nn.MSELoss()(out, target)
+        loss = criterion(out, target)
         total_loss += loss.item()
     if (tp+0.5*(fp+fn)) == 0:
         F1_score = 0
@@ -287,6 +332,21 @@ for transcription_id in tqdm.tqdm(test_transcription_ids):
         embedding_text = model_embedding.encode(X)
         X = embedding_text.tolist()
         X = torch.tensor(X, dtype=torch.float)
+        edge_values = edges[:, [1]]
+        individual_edge_values = []
+        for x in range(0, len(X)):
+            x_neighbors_indexes = [i for i in range(len(formatted_edges)) if formatted_edges[i][0] == x or formatted_edges[i][1] == x]
+            x_edge_values = edge_values[x_neighbors_indexes]
+            x_edge_values = np.unique(x_edge_values)
+
+            # Transform x_edge_values using label_dict.json
+            x_edge_values = [label_dict[str(value)] for value in x_edge_values]
+            edge_labels_weights = torch.zeros(size_dict, dtype=torch.float)
+            for i in range(size_dict):
+                edge_labels_weights[i] = x_edge_values.count(i)
+            edge_labels_weights = edge_labels_weights / torch.sum(edge_labels_weights)
+            individual_edge_values.append(edge_labels_weights)
+        X = torch.cat((X, torch.stack(individual_edge_values)), 1)
         data = Data(x=X, edge_index=edge_index.t())
         labels = model(data)
         predictions = [1 if x > best_b else 0 for x in labels]

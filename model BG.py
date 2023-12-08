@@ -123,6 +123,7 @@ class GCN(torch.nn.Module):
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = GCN().to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
+scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer)
 dataset_train = [data.to(device) for data in dataset_train]
 
 losses_train = []
