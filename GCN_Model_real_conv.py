@@ -12,10 +12,10 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch_geometric.data import Data
 from torch_geometric.nn import GATConv
 from sentence_transformers import SentenceTransformer
-from matplotlib.animation import FuncAnimation
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 from pathlib import Path
-
+import tqdm
 
 os.environ['CUDA_VISIBLE_DEVICES'] ='0'
 
@@ -104,7 +104,7 @@ for transcription_id in tqdm.tqdm(training_transcription_ids, desc="Processing t
             edge_index = np.concatenate((edge_index, np.zeros((max_graph_size - len(X), 2))))
         X_list.append(torch.tensor(embedding_text[:max_graph_size], dtype=torch.float))
         edge_index_list.append(torch.tensor(edge_index[:max_graph_size], dtype=torch.long))
-        edge_attr_list.append(torch.tensor(edge_attr[:max_graph_size], dtype=torch.float))
+        edge_attr_list.append(torch.tensor(edge_attr[:max_graph_size-1], dtype=torch.float))
         labels_list.append(torch.tensor(labels[:max_graph_size], dtype=torch.long))
         graph_sizes.append(len(X))
 
@@ -133,8 +133,8 @@ edge_attr_list_val = edge_attr_list[:validation_size]
 print("Dataset splitted in train and validation sets of size", len(X_list_train), "and", len(X_list_val), "respectively.")
 
 print("Building dataset...")
-dataset_train = [Data(x=X, edge_index=edge_index, edge_attr=edge_attr, y=labels).cuda() for X, edge_index, edge_attr, labels in zip(X_list_train, edge_index_list_train, edge_attr_list_train, labels_list_train)]
-dataset_val = [Data(x=X, edge_index=edge_index, edge_attr=edge_attr, y=labels).cuda() for X, edge_index, edge_attr, labels in zip(X_list_val, edge_index_list_val, edge_attr_list_val, labels_list_val)]
+dataset_train = [Data(x=X, edge_index=edge_index, edge_attr=edge_attr, y=labels).cpu() for X, edge_index, edge_attr, labels in zip(X_list_train, edge_index_list_train, edge_attr_list_train, labels_list_train)]
+dataset_val = [Data(x=X, edge_index=edge_index, edge_attr=edge_attr, y=labels).cpu() for X, edge_index, edge_attr, labels in zip(X_list_val, edge_index_list_val, edge_attr_list_val, labels_list_val)]
 print("Dataset built:", len(dataset_train) + len(dataset_val), "Graphs (", len(dataset_train), "for training and", len(dataset_val), "for validation).")
 
 ### _____________________________________________________________________________ ###
@@ -170,36 +170,33 @@ class Model(torch.nn.Module):
         self.target_size = num_classes
         self.size_input = size_input
         self.convs = [
-            GATConv([self.num_features,self.size_input], self.hidden_size, heads=1).cuda()]      
-        self.linear = torch.nn.Linear(self.hidden_size, self.target_size).cuda()
-        self.relu = torch.nn.ReLU().to('cuda')
-        self.dropout = torch.nn.Dropout(0.15).to('cuda')
+            GATConv([self.num_features,self.size_input], self.hidden_size, heads=1).cpu(),]      
+        self.linear = torch.nn.Linear(self.hidden_size, self.target_size).cpu()
+        self.relu = torch.nn.ReLU().to('cpu')
+        self.dropout = torch.nn.Dropout(0.15).to('cpu')
 
     def forward(self, data):
         x, edge_index,edge_attr = data.x, data.edge_index.t(), data.edge_attr.unsqueeze(1)
-        x = torch.tensor(x, dtype=torch.float).t().cuda()
+        x = torch.tensor(x, dtype=torch.float).cpu()
         print(x.shape)
         for conv in self.convs[:-1]:
             x = conv(x, edge_index, edge_attr=edge_attr)
-            print(x.shape)
             x = self.relu(x)
-            print(x.shape)
             x = self.dropout(x)
-            print(x.shape)
         x = self.convs[-1](x, edge_index, edge_attr=edge_attr)
-        print(x.shape)
         x = self.linear(x)
         return self.relu(x)
     
 
 # --------------------- Training --------------------- #
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cpu' if torch.cuda.is_available() else 'cpu')
 model_GAT = Model()
-model_GAT = model_GAT.cuda()
+model_GAT = model_GAT.cpu()
 optimizer = torch.optim.Adam(model_GAT.parameters(), lr=learning_rate, weight_decay=weight_decay)
 scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.3, patience=15, min_lr=0.000001, verbose=True)
-dataset_train = [data.cuda() for data in dataset_train]
+dataset_train = [data.cpu() for data in dataset_train]
+criterion = torch.nn.MSELoss().cpu()
 losses_train = []
 losses_val = []
 
@@ -218,7 +215,7 @@ for epoch in range(epochs):
         calculate_f1 = False
     for data in dataset_train :
         optimizer.zero_grad()
-        out = model_GAT(data.cuda())
+        out = model_GAT(data.cpu())
         if calculate_f1:
             target = data.y.unsqueeze(1).float().view(-1)
             predictions = [1 if x > threshold else 0 for x in out]
@@ -230,7 +227,8 @@ for epoch in range(epochs):
             tn_t += [predictions[i] == 0 and target[i] == 0 for i in range(len(predictions))].count(True)
             fp_t += [predictions[i] == 1 and target[i] == 0 for i in range(len(predictions))].count(True)
             fn_t += [predictions[i] == 0 and target[i] == 1 for i in range(len(predictions))].count(True)
-        loss = F.mse_loss(out, data.y.unsqueeze(1).float())
+        print(out.shape,data.y.unsqueeze(1).float().shape)
+        loss = criterion(out, data.y.unsqueeze(1).float())
         print(loss)
         loss.backward()
         optimizer.step()
@@ -257,7 +255,7 @@ for epoch in range(epochs):
             tn_v += [predictions[i] == 0 and target[i] == 0 for i in range(len(predictions))].count(True)
             fp_v += [predictions[i] == 1 and target[i] == 0 for i in range(len(predictions))].count(True)
             fn_v += [predictions[i] == 0 and target[i] == 1 for i in range(len(predictions))].count(True)
-        loss = F.mse_loss(out, data.y.unsqueeze(1).float())
+        loss = criterion(out, data.y.unsqueeze(1).float())
         loss_val += loss.item()
     loss_val = loss_val / len(dataset_val)
     losses_val.append(loss_val)
@@ -273,8 +271,9 @@ for epoch in range(epochs):
         else :
             print("F1 score on validation set:", tp_v/(tp_v + 0.5*(fp_v + fn_v)))
     print("Validation loss:", loss_val)
-
+    model_GAT.train()
     scheduler.step(loss_val)
+
 
     # Print the losses
 plt.plot(losses_train, label="Training loss")
@@ -360,7 +359,7 @@ class Model_1(torch.nn.Module):
     
 # --------------- Model 1  training ------------- #
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cpu' if torch.cuda.is_available() else 'cpu')
 model_l = Model_1().to(device)
 optimizer = torch.optim.Adam(model_l.parameters(), lr=0.001, weight_decay=5e-4)
 scheduler = ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5, verbose=True)
@@ -475,9 +474,9 @@ final_size = 1
 threshold = 0.25
 
 #Load the two models
-model_lin_2 = Model_1().cuda()
+model_lin_2 = Model_1().cpu()
 model_lin_2.load_state_dict(torch.load("model_linear.pt"))
-model_GAT_2 = Model().cuda()
+model_GAT_2 = Model().cpu()
 model_GAT_2.load_state_dict(torch.load("model_GAT.pt"))
 
 # freeze the weights
@@ -494,10 +493,10 @@ class Model_combined(torch.nn.Module):
         self.model_lin = model_lin
         self.model_GAT = model_GAT
         # define the classifier
-        self.fc1 = torch.nn.Linear(2, final_size).cuda()
-        self.dropout = torch.nn.Dropout(dropout).cuda()
-        self.relu = torch.nn.ReLU().cuda()
-        self.sigmoid = torch.nn.Sigmoid().cuda()
+        self.fc1 = torch.nn.Linear(2, final_size).cpu()
+        self.dropout = torch.nn.Dropout(dropout).cpu()
+        self.relu = torch.nn.ReLU().cpu()
+        self.sigmoid = torch.nn.Sigmoid().cpu()
 
 
     def forward(self, data):
@@ -512,11 +511,11 @@ class Model_combined(torch.nn.Module):
     
 # --------------- Combined model training ------------- #
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model_combined = Model_combined().cuda()
+device = torch.device('cpu' if torch.cuda.is_available() else 'cpu')
+model_combined = Model_combined().cpu()
 optimizer = torch.optim.Adam(model_combined.parameters(), lr=0.01, weight_decay=5e-4)
 scheduler = ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5, verbose=True)
-criterion = torch.nn.MSELoss().cuda()
+criterion = torch.nn.MSELoss().cpu()
 # criterion = torch.nn.BCEWithLogitsLoss()
 dataset_train = [data.to(device) for data in dataset_train]
 
@@ -668,7 +667,7 @@ for transcription_id in tqdm.tqdm(test_transcription_ids):
         edge_attr = torch.tensor(list_edge_attr, dtype=torch.float)
         # Create a Data object for each transcription
         data = Data(x=X, edge_index=edge_index, edge_attr=edge_attr)
-        data = data.cuda()
+        data = data.cpu()
         labels = model_combined(data)
         predictions = [1 if x > best_b_2 else 0 for x in labels] 
 

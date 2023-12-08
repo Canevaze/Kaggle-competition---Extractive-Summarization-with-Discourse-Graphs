@@ -95,7 +95,8 @@ dataset_val = [Data(x=X, edge_index=edge_index, y=labels) for X, edge_index, lab
 print("Dataset built:", len(dataset_train) + len(dataset_val), "Graphs (", len(dataset_train), "for training and", len(dataset_val), "for validation).")
 
 
-# Model definition (GCN) #
+# ---------------  Model definition --------------- #
+
 input_size = 384
 intermediate_size = 384
 dropout = 0.2
@@ -200,8 +201,8 @@ plt.show()
 
 
 
-# Model evaluation #
-# use threshold betha to determine if the prediction is 1 or 0
+# ------------------- Threshold ------------------- #
+
 B = np.linspace(0,1,100)
 F1_score_list = []
 best_b = 0
